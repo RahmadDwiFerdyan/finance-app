@@ -7,3 +7,4 @@ router.get('/summary', statsController.getSummary);
 router.get('/by-category', statsController.getByCategory);
 
 module.exports = router;
+    

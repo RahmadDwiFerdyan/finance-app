@@ -13,87 +13,96 @@ function getMonthOrDefault(monthParam) {
   return monthParam;
 }
 
-// GET /stats/summary?month=YYYY-MM
-exports.getSummary = async (req, res, next) => {
-  try {
-    const month = getMonthOrDefault(req.query.month);
-    const monthDate = month + '-01';
+// Helper: ambil bulan
+function getMonth(monthParam) {
+  if (!monthParam) {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    return `${y}-${m}`;
+  }
+  return monthParam;
+}
 
-    // 1. total income & expense
+// GET /stats/summary
+exports.getSummary = async (req, res) => {
+  try {
+    const month = getMonth(req.query.month);
+    const monthDate = month + "-01";
+
+    // =========================
+    // 1) TOTAL INCOME + EXPENSE
+    // =========================
     const summaryQuery = `
       SELECT
-        COALESCE(SUM(CASE WHEN type = 'income' THEN amount END), 0) AS total_income,
-        COALESCE(SUM(CASE WHEN type = 'expense' THEN amount END), 0) AS total_expense
-      FROM transactions
-      WHERE date_trunc('month', tx_date) = date_trunc('month', $1::date);
-    `;
-    const summaryResult = await db.query(summaryQuery, [monthDate]);
-    const summaryRow = summaryResult.rows[0];
-
-    const totalIncome = parseFloat(summaryRow.total_income);
-    const totalExpense = parseFloat(summaryRow.total_expense);
-    const balance = totalIncome - totalExpense;
-
-    // 2. daily expense untuk avg_daily_expense
-    const dailyExpenseQuery = `
-      SELECT tx_date, 
-             COALESCE(SUM(CASE WHEN type = 'expense' THEN amount END), 0) AS daily_expense
+        COALESCE(SUM(CASE WHEN type='income' THEN amount END), 0) AS total_income,
+        COALESCE(SUM(CASE WHEN type='expense' THEN amount END), 0) AS total_expense
       FROM transactions
       WHERE date_trunc('month', tx_date) = date_trunc('month', $1::date)
-      GROUP BY tx_date
-      ORDER BY tx_date;
     `;
-    const dailyExpenseResult = await db.query(dailyExpenseQuery, [monthDate]);
+    const summaryRes = await db.query(summaryQuery, [monthDate]);
 
-    let daysWithExpense = dailyExpenseResult.rows.length || 1;
-    let sumDailyExpense = 0;
+    const total_income = Number(summaryRes.rows[0]?.total_income || 0);
+    const total_expense = Number(summaryRes.rows[0]?.total_expense || 0);
+    const balance = total_income - total_expense;
 
-    dailyExpenseResult.rows.forEach((row) => {
-      sumDailyExpense += parseFloat(row.daily_expense);
-    });
-
-    const avgDailyExpense = sumDailyExpense / daysWithExpense;
-
-    // 3. daily trend income & expense
-    const dailyTrendQuery = `
+    // =========================
+    // 2) DAILY TREND
+    // =========================
+    const trendQuery = `
       SELECT tx_date,
-             COALESCE(SUM(CASE WHEN type = 'income' THEN amount END), 0) AS income,
-             COALESCE(SUM(CASE WHEN type = 'expense' THEN amount END), 0) AS expense
+        COALESCE(SUM(CASE WHEN type='income' THEN amount END), 0) AS income,
+        COALESCE(SUM(CASE WHEN type='expense' THEN amount END), 0) AS expense
       FROM transactions
       WHERE date_trunc('month', tx_date) = date_trunc('month', $1::date)
       GROUP BY tx_date
-      ORDER BY tx_date;
+      ORDER BY tx_date
     `;
-    const dailyTrendResult = await db.query(dailyTrendQuery, [monthDate]);
+    const trendRes = await db.query(trendQuery, [monthDate]);
 
-    // Hitung saldo kumulatif per hari
-    let runningBalance = 0;
-    const dailyTrend = dailyTrendResult.rows.map((row) => {
-      const income = parseFloat(row.income);
-      const expense = parseFloat(row.expense);
-      runningBalance += income - expense;
+    let running = 0;
+    const daily_trend = trendRes.rows.map((row) => {
+      const income = Number(row.income || 0);
+      const expense = Number(row.expense || 0);
+      running += income - expense;
 
       return {
         date: row.tx_date,
         income,
         expense,
-        balance: runningBalance,
+        balance: running,
       };
     });
 
-    res.json({
+    // =========================
+    // 3) AVG DAILY EXPENSE
+    // =========================
+    const totalDayExpense = trendRes.rows.reduce((acc, row) => acc + Number(row.expense || 0), 0);
+    const days = trendRes.rows.length || 1;
+    const avg_daily_expense = totalDayExpense / days;
+
+    return res.json({
       month,
-      total_income: totalIncome,
-      total_expense: totalExpense,
+      total_income,
+      total_expense,
       balance,
-      avg_daily_expense: avgDailyExpense,
-      daily_trend: dailyTrend,
+      avg_daily_expense,
+      daily_trend,
     });
+
   } catch (err) {
-    console.error('Error getSummary:', err);
-    next(err);
+    console.error(err);
+    return res.json({
+      month: getMonth(),
+      total_income: 0,
+      total_expense: 0,
+      balance: 0,
+      avg_daily_expense: 0,
+      daily_trend: [],
+    });
   }
 };
+
 
 // GET /stats/by-category?month=YYYY-MM
 exports.getByCategory = async (req, res, next) => {
